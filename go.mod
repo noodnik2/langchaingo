@@ -96,7 +96,7 @@ require (
 	github.com/pkoukk/tiktoken-go v0.1.2
 	github.com/weaviate/weaviate v1.19.13
 	github.com/weaviate/weaviate-go-client/v4 v4.8.1
-	github.com/yuin/goldmark v1.4.13
+	github.com/yuin/goldmark v1.5.6
 	gitlab.com/golang-commonmark/markdown v0.0.0-20211110145824-bf3e522c626a
 	go.starlark.net v0.0.0-20230302034142-4b1e35fe2254
 	golang.org/x/exp v0.0.0-20230510235704-dd950f8aeaea
