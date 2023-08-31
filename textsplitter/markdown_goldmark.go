@@ -30,6 +30,7 @@ func NewMarkdownTextSplitterV2(opts ...Option) MarkdownTextSplitterV2 {
 		ast.KindParagraph: sp.renderParagraph,
 		ast.KindList:      sp.renderList,
 		ast.KindListItem:  sp.renderListItem,
+		ast.KindEmphasis:  sp.renderEmphasis,
 
 		// inlines
 		ast.KindText:   sp.renderText,
@@ -156,11 +157,8 @@ func (m *MarkdownTextSplitterV2) renderParagraph(
 ) (ast.WalkStatus, error) {
 	if !entering {
 		fmt.Printf("paragraph leaving: %s\n", node.Text(source))
+		_, _ = w.WriteString("\n\n")
 		return ast.WalkContinue, nil
-	}
-
-	if _, err := w.WriteString("\n\n"); err != nil {
-		return ast.WalkStop, err
 	}
 
 	return ast.WalkContinue, nil
@@ -173,10 +171,12 @@ func (m *MarkdownTextSplitterV2) renderList(
 	n := node.(*ast.List)
 	if !entering {
 		fmt.Printf("list leaving: %s\n", node.Text(source))
+		_, _ = w.WriteString("\n")
 		return ast.WalkContinue, nil
 	}
 
-	nnw := w.(*MarkdownWriter).clone()
+	writer := w.(*MarkdownWriter)
+	nnw := writer.clone()
 	if n.IsOrdered() {
 		nnw.orderedList = true
 	} else {
@@ -184,6 +184,7 @@ func (m *MarkdownTextSplitterV2) renderList(
 	}
 
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
+		nnw.listOrder++
 		err := m.Render(nnw, c, source)
 		if err != nil {
 			return ast.WalkStop, err
@@ -204,18 +205,19 @@ func (m *MarkdownTextSplitterV2) renderListItem(
 	n := node.(*ast.ListItem)
 	if !entering {
 		fmt.Printf("list item leaving: %s\n", node.Text(source))
+		_, _ = w.WriteString("\n")
 		return ast.WalkContinue, nil
 	}
 
-	nnw := w.(*MarkdownWriter).clone()
-	if nnw.orderedList {
-		nnw.listOrder++
-		_, _ = nnw.WriteString("\n")
-		_, _ = nnw.WriteString(fmt.Sprintf("%d. ", nnw.listOrder))
+	writer := w.(*MarkdownWriter)
+
+	if writer.orderedList {
+		_, _ = writer.WriteString(fmt.Sprintf("%d. ", writer.listOrder))
 	} else {
-		_, _ = nnw.WriteString("- ")
+		_, _ = writer.WriteString("- ")
 	}
 
+	nnw := writer.clone()
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		err := m.Render(nnw, c, source)
 		if err != nil {
@@ -228,6 +230,8 @@ func (m *MarkdownTextSplitterV2) renderListItem(
 			}
 			_, _ = w.WriteString(chunk)
 		}
+
+		_, _ = w.WriteString("\n")
 	}
 
 	return ast.WalkSkipChildren, nil
@@ -409,7 +413,7 @@ func (m *MarkdownWriter) flush() {
 		m.hTitlePrepended = true
 		if m.hTitle != "" && !strings.Contains(m.curSnippet, m.hTitle) {
 			// prepend `Header Title` to chunk
-			chunk = fmt.Sprintf("%s\n%s", m.hTitle, chunk)
+			// chunk = fmt.Sprintf("%s\n%s", m.hTitle, chunk)
 		}
 		m.chunks = append(m.chunks, chunk)
 	}
