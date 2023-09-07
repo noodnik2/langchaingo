@@ -1,6 +1,7 @@
 package textsplitter
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -54,12 +55,12 @@ for a review.
 `
 
 	sp := NewMarkdownTextSplitterV2()
-
 	chunks, err := sp.SplitText(markdown)
-
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	t.Log(chunks)
+	for _, chunk := range chunks {
+		fmt.Printf("%s\n---------------\n", chunk)
+	}
 }

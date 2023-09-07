@@ -7,8 +7,9 @@ import (
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/extension"
+	extensionAst "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/text"
-	"github.com/yuin/goldmark/util"
 )
 
 // NewMarkdownTextSplitterV2 creates a new MarkdownTextSplitterV2
@@ -33,6 +34,12 @@ func NewMarkdownTextSplitterV2(opts ...Option) MarkdownTextSplitterV2 {
 		ast.KindEmphasis:  sp.renderEmphasis,
 		ast.KindTextBlock: sp.renderTextBlock,
 		ast.KindAutoLink:  sp.renderAutoLink,
+
+		// table
+		extensionAst.KindTable:       sp.renderTable,
+		extensionAst.KindTableHeader: sp.renderTableHeader,
+		extensionAst.KindTableRow:    sp.renderTableRow,
+		extensionAst.KindTableCell:   sp.renderTableCell,
 
 		// inlines
 		ast.KindLink:   sp.renderLink,
@@ -70,8 +77,15 @@ type MarkdownTextSplitterV2 struct {
 func (m *MarkdownTextSplitterV2) SplitText(s string) ([]string, error) {
 	reader := text.NewReader([]byte(s))
 
-	node := goldmark.DefaultParser().Parse(reader)
+	gm := goldmark.New(
+		goldmark.WithExtensions(
+			extension.NewTable(
+				extension.WithTableCellAlignMethod(extension.TableCellAlignDefault),
+			),
+		),
+	)
 
+	node := gm.Parser().Parse(reader)
 	node.Dump(reader.Source(), 0)
 
 	writer := &MarkdownWriter{
@@ -100,10 +114,10 @@ func (m *MarkdownTextSplitterV2) SplitText(s string) ([]string, error) {
 // =================================================================================================================//
 
 // NodeRender is a function that renders a markdown node.
-type NodeRender = func(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error)
+type NodeRender = func(w *MarkdownWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error)
 
 // Render renders a markdown node.
-func (m *MarkdownTextSplitterV2) Render(writer util.BufWriter, n ast.Node, source []byte) error {
+func (m *MarkdownTextSplitterV2) Render(writer *MarkdownWriter, n ast.Node, source []byte) error {
 	err := ast.Walk(n, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		s := ast.WalkContinue
 		var err error
@@ -118,18 +132,16 @@ func (m *MarkdownTextSplitterV2) Render(writer util.BufWriter, n ast.Node, sourc
 
 // renderDocument renders a markdown document root node.
 func (m *MarkdownTextSplitterV2) renderDocument(
-	util.BufWriter, []byte, ast.Node, bool,
+	*MarkdownWriter, []byte, ast.Node, bool,
 ) (ast.WalkStatus, error) {
 	return ast.WalkContinue, nil
 }
 
 // renderHeading renders a heading node.
 func (m *MarkdownTextSplitterV2) renderHeading(
-	w util.BufWriter, source []byte, node ast.Node, entering bool,
+	w *MarkdownWriter, source []byte, node ast.Node, entering bool,
 ) (ast.WalkStatus, error) {
 	n, _ := node.(*ast.Heading)
-	writer, _ := w.(*MarkdownWriter)
-
 	if !entering {
 		_, _ = w.WriteString("\n")
 		return ast.WalkContinue, nil
@@ -139,13 +151,13 @@ func (m *MarkdownTextSplitterV2) renderHeading(
 	_, _ = w.WriteString(" ")
 	_, _ = w.Write(n.Text(source))
 
-	writer.hTitlePrepended = false
+	w.hTitlePrepended = false
 	return ast.WalkSkipChildren, nil
 }
 
 // renderParagraph renders a paragraph node.
 func (m *MarkdownTextSplitterV2) renderParagraph(
-	w util.BufWriter, source []byte, node ast.Node, entering bool,
+	w *MarkdownWriter, source []byte, node ast.Node, entering bool,
 ) (ast.WalkStatus, error) {
 	if !entering {
 		fmt.Printf("paragraph leaving: %s\n", node.Text(source))
@@ -158,10 +170,9 @@ func (m *MarkdownTextSplitterV2) renderParagraph(
 
 // renderList renders a list node.
 func (m *MarkdownTextSplitterV2) renderList(
-	w util.BufWriter, source []byte, node ast.Node, entering bool,
+	w *MarkdownWriter, source []byte, node ast.Node, entering bool,
 ) (ast.WalkStatus, error) {
 	n, _ := node.(*ast.List)
-	writer, _ := w.(*MarkdownWriter)
 
 	if !entering {
 		fmt.Printf("list leaving: %s\n", node.Text(source))
@@ -170,7 +181,7 @@ func (m *MarkdownTextSplitterV2) renderList(
 		return ast.WalkContinue, nil
 	}
 
-	nnw := writer.clone()
+	nnw := w.clone()
 	if n.IsOrdered() {
 		nnw.orderedList = true
 	} else {
@@ -180,7 +191,7 @@ func (m *MarkdownTextSplitterV2) renderList(
 	_, _ = w.WriteString("\n")
 
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
-		nnw.indentLevel = writer.indentLevel
+		nnw.indentLevel = w.indentLevel
 		nnw.indentLevel++
 
 		err := m.Render(nnw, c, source)
@@ -196,7 +207,7 @@ func (m *MarkdownTextSplitterV2) renderList(
 			}
 		}
 
-		_, _ = writer.WriteString(strings.Join(nnw.chunks, "\n"))
+		_, _ = w.WriteString(strings.Join(nnw.chunks, "\n"))
 
 		nnw.chunks = []string{}
 	}
@@ -206,7 +217,7 @@ func (m *MarkdownTextSplitterV2) renderList(
 
 // renderListItem renders a list item node.
 func (m *MarkdownTextSplitterV2) renderListItem(
-	w util.BufWriter, source []byte, node ast.Node, entering bool,
+	w *MarkdownWriter, source []byte, node ast.Node, entering bool,
 ) (ast.WalkStatus, error) {
 	if !entering {
 		_, _ = w.WriteString("\n")
@@ -216,23 +227,100 @@ func (m *MarkdownTextSplitterV2) renderListItem(
 		return ast.WalkContinue, nil
 	}
 
-	writer, _ := w.(*MarkdownWriter)
 	n, _ := node.(*ast.ListItem)
 	if n.Parent().Kind() == ast.KindList {
-		writer.listOrder++
+		w.listOrder++
 	}
-	if writer.orderedList {
-		_, _ = writer.WriteString(fmt.Sprintf("%d. ", writer.listOrder))
+	if w.orderedList {
+		_, _ = w.WriteString(fmt.Sprintf("%d. ", w.listOrder))
 	} else {
-		_, _ = writer.WriteString("- ")
+		_, _ = w.WriteString("- ")
 	}
 
 	return ast.WalkContinue, nil
 }
 
+// renderTable renders a table node.
+func (m *MarkdownTextSplitterV2) renderTable(
+	w *MarkdownWriter, source []byte, n ast.Node, entering bool) (ast.WalkStatus, error) {
+	if entering {
+		_ = w.Flush()
+	} else {
+		m.splitTableHeaderFirst(w, w.curTHeaders, w.curTRows)
+	}
+	return ast.WalkContinue, nil
+}
+
+// splitTableHeaderFirst splits table header first
+func (m *MarkdownTextSplitterV2) splitTableHeaderFirst(w *MarkdownWriter, header []string, rows [][]string) {
+	defer func() {
+		w.curTHeaders = []string{}
+		w.curTRows = [][]string{}
+	}()
+
+	headnoteEmpty := false
+	for _, h := range header {
+		if h != "" {
+			headnoteEmpty = true
+			break
+		}
+	}
+
+	// Sometime, there is no header in table, put the real table header to the first row
+	if !headnoteEmpty && len(rows) != 0 {
+		header = rows[0]
+		rows = rows[1:]
+	}
+
+	headerMD := tableHeaderInMarkdown(header)
+	if len(rows) == 0 {
+		w.chunks = append(w.chunks, headerMD)
+		return
+	}
+	// append table header
+	for _, row := range rows {
+		line := tableRowInMarkdown(row)
+		w.chunks = append(w.chunks, fmt.Sprintf("%s\n%s", headerMD, line))
+	}
+}
+
+// renderTableHeader renders a table header node.
+func (m *MarkdownTextSplitterV2) renderTableHeader(
+	w *MarkdownWriter, _ []byte, _ ast.Node, entering bool) (ast.WalkStatus, error) {
+	if !entering {
+		w.curTHeaders = w.curRow
+		w.curRow = []string{}
+	}
+	return ast.WalkContinue, nil
+}
+
+// renderTableRow renders a table row node.
+func (m *MarkdownTextSplitterV2) renderTableRow(
+	w *MarkdownWriter, _ []byte, _ ast.Node, entering bool) (ast.WalkStatus, error) {
+	if !entering {
+		if len(w.curTHeaders) == 0 {
+			w.curTHeaders = w.curRow
+		} else {
+			w.curTRows = append(w.curTRows, w.curRow)
+		}
+		w.curRow = []string{}
+	}
+	return ast.WalkContinue, nil
+}
+
+// renderTableCell renders a table cell node.
+func (m *MarkdownTextSplitterV2) renderTableCell(
+	w *MarkdownWriter, source []byte, n ast.Node, entering bool) (ast.WalkStatus, error) {
+	if entering {
+		source := n.Text(source)
+		w.curRow = append(w.curRow, string(source))
+	}
+	return ast.WalkContinue, nil
+}
+
 // renderEmphasis renders an emphasis node.
 func (m *MarkdownTextSplitterV2) renderEmphasis(
-	w util.BufWriter, _ []byte, _ ast.Node, entering bool,
+	w *MarkdownWriter, _ []byte, _ ast.Node, entering bool,
 ) (ast.WalkStatus, error) {
 	if !entering {
 		_, _ = w.WriteString("**")
@@ -245,7 +333,7 @@ func (m *MarkdownTextSplitterV2) renderEmphasis(
 
 // renderTextBlock renders a text block node.
 func (m *MarkdownTextSplitterV2) renderTextBlock(
-	w util.BufWriter, _ []byte, node ast.Node, entering bool,
+	w *MarkdownWriter, _ []byte, node ast.Node, entering bool,
 ) (ast.WalkStatus, error) {
 	if !entering {
 		if _, ok := node.NextSibling().(ast.Node); ok && node.FirstChild() != nil {
@@ -258,7 +346,7 @@ func (m *MarkdownTextSplitterV2) renderTextBlock(
 
 // renderAutoLink renders an auto link node.
 func (m *MarkdownTextSplitterV2) renderAutoLink(
-	w util.BufWriter, source []byte, node ast.Node, entering bool,
+	w *MarkdownWriter, source []byte, node ast.Node, entering bool,
 ) (ast.WalkStatus, error) {
 	n, _ := node.(*ast.AutoLink)
 	if !entering {
@@ -272,7 +360,7 @@ func (m *MarkdownTextSplitterV2) renderAutoLink(
 
 // renderLink renders a link node.
 func (m *MarkdownTextSplitterV2) renderLink(
-	w util.BufWriter, source []byte, node ast.Node, entering bool,
+	w *MarkdownWriter, source []byte, node ast.Node, entering bool,
 ) (ast.WalkStatus, error) {
 	n, _ := node.(*ast.Link)
 	if !entering {
@@ -286,7 +374,7 @@ func (m *MarkdownTextSplitterV2) renderLink(
 
 // renderText renders a text node.
 func (m *MarkdownTextSplitterV2) renderText(
-	w util.BufWriter, source []byte, node ast.Node, entering bool,
+	w *MarkdownWriter, source []byte, node ast.Node, entering bool,
 ) (ast.WalkStatus, error) {
 	if !entering {
 		return ast.WalkContinue, nil
@@ -303,7 +391,7 @@ func (m *MarkdownTextSplitterV2) renderText(
 
 // renderString renders a string node.
 func (m *MarkdownTextSplitterV2) renderString(
-	w util.BufWriter, source []byte, node ast.Node, entering bool,
+	w *MarkdownWriter, source []byte, node ast.Node, entering bool,
 ) (ast.WalkStatus, error) {
 	if !entering {
 		fmt.Printf("string leaving: %s\n", node.Text(source))
@@ -341,6 +429,13 @@ type MarkdownWriter struct {
 
 	// indentLevel represents the current indent level for ordered、unordered lists
 	indentLevel int
+
+	// curTHeaders current table headers
+	curTHeaders []string
+	// curRow current table row
+	curRow []string
+	// curTRows current table rows
+	curTRows [][]string
 
 	curSnippet   string
 	chunkSize    int
