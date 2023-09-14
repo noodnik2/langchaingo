@@ -26,8 +26,8 @@ func SplitDocuments(textSplitter TextSplitter, documents []schema.Document) ([]s
 }
 
 // CreateDocuments creates documents from texts and metadatas with a text splitter. If
-// the length of the metadatas is zero, the result documents will contain no metadata.
-// Otherwise the numbers of texts and metadatas must match.
+// the length of the metadatas is not zero, the numbers of texts and metadatas must match.
+// Metadata extracted from the texts will be loaded into to the returned metadatas.
 func CreateDocuments(textSplitter TextSplitter, texts []string, metadatas []map[string]any) ([]schema.Document, error) {
 	if len(metadatas) == 0 {
 		metadatas = make([]map[string]any, len(texts))
@@ -51,9 +51,12 @@ func CreateDocuments(textSplitter TextSplitter, texts []string, metadatas []map[
 			for key, value := range metadatas[i] {
 				curMetadata[key] = value
 			}
+			for key, value := range chunk.Metadata {
+				curMetadata[key] = value
+			}
 
 			documents = append(documents, schema.Document{
-				PageContent: chunk,
+				PageContent: chunk.Text,
 				Metadata:    curMetadata,
 			})
 		}

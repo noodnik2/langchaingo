@@ -10,30 +10,34 @@ import (
 	"github.com/yuin/goldmark/extension"
 	extensionAst "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 )
 
-// NewMarkdownTextSplitterV2 creates a new MarkdownTextSplitterV2
-func NewMarkdownTextSplitterV2(opts ...Option) MarkdownTextSplitterV2 {
+// NewMarkdownTextSplitterV2 creates a new MarkdownTextSplitterV2.
+func NewMarkdownTextSplitterV2(opts ...Option) *MarkdownTextSplitterV2 {
 	options := DefaultOptions()
 	for _, o := range opts {
 		o(&options)
 	}
 
-	sp := MarkdownTextSplitterV2{
+	sp := &MarkdownTextSplitterV2{
 		ChunkSize:      options.ChunkSize,
 		ChunkOverlap:   options.ChunkOverlap,
 		SecondSplitter: options.SecondSplitter,
+		LevelHeaderFn:  options.LevelHeaderFn,
 	}
 
 	sp.nodeRenderers = map[ast.NodeKind]NodeRender{
-		ast.KindDocument:  sp.renderDocument,
-		ast.KindHeading:   sp.renderHeading,
-		ast.KindParagraph: sp.renderParagraph,
-		ast.KindList:      sp.renderList,
-		ast.KindListItem:  sp.renderListItem,
-		ast.KindEmphasis:  sp.renderEmphasis,
-		ast.KindTextBlock: sp.renderTextBlock,
-		ast.KindAutoLink:  sp.renderAutoLink,
+		ast.KindDocument:        sp.renderDocument,
+		ast.KindHeading:         sp.renderHeading,
+		ast.KindParagraph:       sp.renderParagraph,
+		ast.KindList:            sp.renderList,
+		ast.KindListItem:        sp.renderListItem,
+		ast.KindEmphasis:        sp.renderEmphasis,
+		ast.KindTextBlock:       sp.renderTextBlock,
+		ast.KindAutoLink:        sp.renderAutoLink,
+		ast.KindBlockquote:      sp.renderBlockQuote,
+		ast.KindFencedCodeBlock: sp.renderFencedCodeBlock,
 
 		// table
 		extensionAst.KindTable:       sp.renderTable,
@@ -62,7 +66,7 @@ func NewMarkdownTextSplitterV2(opts ...Option) MarkdownTextSplitterV2 {
 	return sp
 }
 
-// MarkdownTextSplitterV2 Markdown text splitter
+// MarkdownTextSplitterV2 Markdown text splitter.
 type MarkdownTextSplitterV2 struct {
 	ChunkSize    int
 	ChunkOverlap int
@@ -71,10 +75,11 @@ type MarkdownTextSplitterV2 struct {
 
 	// nodeRenderers is a map of node kind and NodeRender.
 	nodeRenderers map[ast.NodeKind]NodeRender
+	LevelHeaderFn LevelHeaderFn
 }
 
 // SplitText splits a text into multiple text.
-func (m *MarkdownTextSplitterV2) SplitText(s string) ([]string, error) {
+func (m *MarkdownTextSplitterV2) SplitText(s string) ([]Chunk, error) {
 	reader := text.NewReader([]byte(s))
 
 	gm := goldmark.New(
@@ -92,6 +97,7 @@ func (m *MarkdownTextSplitterV2) SplitText(s string) ([]string, error) {
 		chunkSize:      m.ChunkSize,
 		chunkOverlap:   m.ChunkOverlap,
 		secondSplitter: m.SecondSplitter,
+		levelHeaderFn:  m.LevelHeaderFn,
 	}
 
 	err := m.Render(writer, node, []byte(s))
@@ -143,25 +149,34 @@ func (m *MarkdownTextSplitterV2) renderHeading(
 ) (ast.WalkStatus, error) {
 	n, _ := node.(*ast.Heading)
 	if !entering {
-		_, _ = w.WriteString("\n")
+		w.joinSnippet("\n")
 		return ast.WalkContinue, nil
 	}
 
-	_, _ = w.WriteString(strings.Repeat("#", n.Level))
-	_, _ = w.WriteString(" ")
-	_, _ = w.Write(n.Text(source))
+	w.applyToChunks()
 
+	hTitle := string(n.Text(source))
+	w.joinSnippet(fmt.Sprintf("%s %s", strings.Repeat("#", n.Level), hTitle))
+
+	w.hTitle = hTitle // TODO (noodnik2): Check that it fails a test if this isn't done here
 	w.hTitlePrepended = false
+
+	if n.Level != len(w.headers) {
+		newHeaders := make([]string, n.Level)
+		copy(newHeaders, w.headers)
+		w.headers = newHeaders
+	}
+	w.headers[n.Level-1] = hTitle
+
 	return ast.WalkSkipChildren, nil
 }
 
 // renderParagraph renders a paragraph node.
 func (m *MarkdownTextSplitterV2) renderParagraph(
-	w *MarkdownWriter, source []byte, node ast.Node, entering bool,
+	w *MarkdownWriter, _ []byte, _ ast.Node, entering bool,
 ) (ast.WalkStatus, error) {
 	if !entering {
-		fmt.Printf("paragraph leaving: %s\n", node.Text(source))
-		_, _ = w.WriteString("\n\n")
+		w.joinSnippet("\n")
 		return ast.WalkContinue, nil
 	}
 
@@ -174,10 +189,9 @@ func (m *MarkdownTextSplitterV2) renderList(
 ) (ast.WalkStatus, error) {
 	n, _ := node.(*ast.List)
 
-	if !entering {
-		fmt.Printf("list leaving: %s\n", node.Text(source))
+	w.joinSnippet("\n")
 
-		_, _ = w.WriteString("\n")
+	if !entering {
 		return ast.WalkContinue, nil
 	}
 
@@ -188,8 +202,6 @@ func (m *MarkdownTextSplitterV2) renderList(
 		nnw.bulletList = true
 	}
 
-	_, _ = w.WriteString("\n")
-
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		nnw.indentLevel = w.indentLevel
 		nnw.indentLevel++
@@ -199,17 +211,22 @@ func (m *MarkdownTextSplitterV2) renderList(
 			return ast.WalkStop, err
 		}
 
-		nnw.flush()
+		nnw.applyToChunks()
 
 		for i := range nnw.chunks {
+			var txt string
 			if nnw.indentLevel > 1 {
-				nnw.chunks[i] = formatWithIndent(nnw.chunks[i], "  ")
+				txt = formatWithIndent(nnw.chunks[i].Text, "  ")
+			} else {
+				txt = nnw.chunks[i].Text
 			}
+			if i < (len(nnw.chunks) - 1) {
+				txt += "\n"
+			}
+			w.joinSnippet(txt)
 		}
 
-		_, _ = w.WriteString(strings.Join(nnw.chunks, "\n"))
-
-		nnw.chunks = []string{}
+		nnw.chunks = []Chunk{}
 	}
 
 	return ast.WalkSkipChildren, nil
@@ -217,13 +234,10 @@ func (m *MarkdownTextSplitterV2) renderList(
 
 // renderListItem renders a list item node.
 func (m *MarkdownTextSplitterV2) renderListItem(
-	w *MarkdownWriter, source []byte, node ast.Node, entering bool,
+	w *MarkdownWriter, _ []byte, node ast.Node, entering bool,
 ) (ast.WalkStatus, error) {
 	if !entering {
-		_, _ = w.WriteString("\n")
-
-		fmt.Printf("list item leaving: %s\n", node.Text(source))
-
+		w.joinSnippet("\n")
 		return ast.WalkContinue, nil
 	}
 
@@ -232,9 +246,9 @@ func (m *MarkdownTextSplitterV2) renderListItem(
 		w.listOrder++
 	}
 	if w.orderedList {
-		_, _ = w.WriteString(fmt.Sprintf("%d. ", w.listOrder))
+		w.joinSnippet(fmt.Sprintf("%d. ", w.listOrder))
 	} else {
-		_, _ = w.WriteString("- ")
+		w.joinSnippet("- ")
 	}
 
 	return ast.WalkContinue, nil
@@ -242,16 +256,17 @@ func (m *MarkdownTextSplitterV2) renderListItem(
 
 // renderTable renders a table node.
 func (m *MarkdownTextSplitterV2) renderTable(
-	w *MarkdownWriter, source []byte, n ast.Node, entering bool) (ast.WalkStatus, error) {
+	w *MarkdownWriter, _ []byte, _ ast.Node, entering bool,
+) (ast.WalkStatus, error) {
 	if entering {
-		_ = w.Flush()
+		w.applyToChunks()
 	} else {
 		m.splitTableHeaderFirst(w, w.curTHeaders, w.curTRows)
 	}
 	return ast.WalkContinue, nil
 }
 
-// splitTableHeaderFirst splits table header first
+// splitTableHeaderFirst splits table header first.
 func (m *MarkdownTextSplitterV2) splitTableHeaderFirst(w *MarkdownWriter, header []string, rows [][]string) {
 	defer func() {
 		w.curTHeaders = []string{}
@@ -274,19 +289,20 @@ func (m *MarkdownTextSplitterV2) splitTableHeaderFirst(w *MarkdownWriter, header
 
 	headerMD := tableHeaderInMarkdown(header)
 	if len(rows) == 0 {
-		w.chunks = append(w.chunks, headerMD)
+		w.chunks = append(w.chunks, Chunk{Text: headerMD})
 		return
 	}
 	// append table header
 	for _, row := range rows {
 		line := tableRowInMarkdown(row)
-		w.chunks = append(w.chunks, fmt.Sprintf("%s\n%s", headerMD, line))
+		w.chunks = append(w.chunks, Chunk{Text: fmt.Sprintf("%s\n%s", headerMD, line)})
 	}
 }
 
 // renderTableHeader renders a table header node.
 func (m *MarkdownTextSplitterV2) renderTableHeader(
-	w *MarkdownWriter, _ []byte, _ ast.Node, entering bool) (ast.WalkStatus, error) {
+	w *MarkdownWriter, _ []byte, _ ast.Node, entering bool,
+) (ast.WalkStatus, error) {
 	if !entering {
 		w.curTHeaders = w.curRow
 		w.curRow = []string{}
@@ -296,7 +312,8 @@ func (m *MarkdownTextSplitterV2) renderTableHeader(
 
 // renderTableRow renders a table row node.
 func (m *MarkdownTextSplitterV2) renderTableRow(
-	w *MarkdownWriter, _ []byte, _ ast.Node, entering bool) (ast.WalkStatus, error) {
+	w *MarkdownWriter, _ []byte, _ ast.Node, entering bool,
+) (ast.WalkStatus, error) {
 	if !entering {
 		if len(w.curTHeaders) == 0 {
 			w.curTHeaders = w.curRow
@@ -310,7 +327,8 @@ func (m *MarkdownTextSplitterV2) renderTableRow(
 
 // renderTableCell renders a table cell node.
 func (m *MarkdownTextSplitterV2) renderTableCell(
-	w *MarkdownWriter, source []byte, n ast.Node, entering bool) (ast.WalkStatus, error) {
+	w *MarkdownWriter, source []byte, n ast.Node, entering bool,
+) (ast.WalkStatus, error) {
 	if entering {
 		source := n.Text(source)
 		w.curRow = append(w.curRow, string(source))
@@ -323,11 +341,11 @@ func (m *MarkdownTextSplitterV2) renderEmphasis(
 	w *MarkdownWriter, _ []byte, _ ast.Node, entering bool,
 ) (ast.WalkStatus, error) {
 	if !entering {
-		_, _ = w.WriteString("**")
+		w.joinSnippet("**")
 		return ast.WalkContinue, nil
 	}
 
-	_, _ = w.WriteString("**")
+	w.joinSnippet("**")
 	return ast.WalkContinue, nil
 }
 
@@ -336,12 +354,63 @@ func (m *MarkdownTextSplitterV2) renderTextBlock(
 	w *MarkdownWriter, _ []byte, node ast.Node, entering bool,
 ) (ast.WalkStatus, error) {
 	if !entering {
-		if _, ok := node.NextSibling().(ast.Node); ok && node.FirstChild() != nil {
-			_ = w.WriteByte('\n')
+		if node.NextSibling() != nil && node.FirstChild() != nil {
+			w.joinSnippet("\n")
 		}
 	}
 
 	return ast.WalkContinue, nil
+}
+
+// renderBlockQuote renders a block quote node.
+func (m *MarkdownTextSplitterV2) renderBlockQuote(
+	w *MarkdownWriter, source []byte, node ast.Node, entering bool,
+) (ast.WalkStatus, error) {
+	n, _ := node.(*ast.Blockquote)
+	if !entering {
+		return ast.WalkContinue, nil
+	}
+
+	w.joinSnippet(fmt.Sprintf("```%s\n```", n.Text(source)))
+
+	return ast.WalkContinue, nil
+}
+
+func (m *MarkdownTextSplitterV2) renderFencedCodeBlock(
+	w *MarkdownWriter, source []byte, node ast.Node, entering bool,
+) (ast.WalkStatus, error) {
+	n, _ := node.(*ast.FencedCodeBlock)
+	w.joinSnippet("```\n")
+	if entering {
+		m.joinNodeLines(w, source, n)
+	}
+	return ast.WalkContinue, nil
+}
+
+func (m *MarkdownTextSplitterV2) joinNodeLines(w *MarkdownWriter, source []byte, n ast.Node) {
+	l := n.Lines().Len()
+	for i := 0; i < l; i++ {
+		line := n.Lines().At(i)
+		m.joinEscaped(w, line.Value(source))
+	}
+}
+
+func (m *MarkdownTextSplitterV2) joinEscaped(w *MarkdownWriter, source []byte) {
+	n := 0
+	l := len(source)
+	for i := 0; i < l; i++ {
+		v := util.EscapeHTMLByte(source[i])
+		if v != nil {
+			w.joinSnippet(string(source[i-n : i]))
+			n = 0
+			w.joinSnippet(string(v))
+			continue
+		}
+		n++
+	}
+	if n != 0 {
+		w.joinSnippet(string(source[l-n:]))
+	}
 }
 
 // renderAutoLink renders an auto link node.
@@ -353,7 +422,7 @@ func (m *MarkdownTextSplitterV2) renderAutoLink(
 		return ast.WalkContinue, nil
 	}
 
-	_, _ = w.WriteString(fmt.Sprintf("[%s](%s)", n.Label(source), n.URL(source)))
+	w.joinSnippet(fmt.Sprintf("[%s](%s)", n.Label(source), n.URL(source)))
 
 	return ast.WalkContinue, nil
 }
@@ -367,9 +436,9 @@ func (m *MarkdownTextSplitterV2) renderLink(
 		return ast.WalkContinue, nil
 	}
 
-	_, _ = w.WriteString(fmt.Sprintf("[%s](%s)", n.Title, n.Destination))
+	w.joinSnippet(fmt.Sprintf("[%s](%s)", n.Text(source), n.Destination))
 
-	return ast.WalkContinue, nil
+	return ast.WalkSkipChildren, nil
 }
 
 // renderText renders a text node.
@@ -381,28 +450,26 @@ func (m *MarkdownTextSplitterV2) renderText(
 	}
 
 	n, _ := node.(*ast.Text)
-	segment := n.Segment
-	if _, err := w.Write(segment.Value(source)); err != nil {
-		return ast.WalkStop, err
+	txt := string(n.Text(source))
+	if n.SoftLineBreak() {
+		txt += "\n"
 	}
+
+	w.joinSnippet(txt)
 
 	return ast.WalkContinue, nil
 }
 
 // renderString renders a string node.
 func (m *MarkdownTextSplitterV2) renderString(
-	w *MarkdownWriter, source []byte, node ast.Node, entering bool,
+	w *MarkdownWriter, _ []byte, node ast.Node, entering bool,
 ) (ast.WalkStatus, error) {
 	if !entering {
-		fmt.Printf("string leaving: %s\n", node.Text(source))
 		return ast.WalkContinue, nil
 	}
 
 	n, _ := node.(*ast.String)
-	if _, err := w.Write(n.Value); err != nil {
-		return ast.WalkStop, err
-	}
-
+	w.joinSnippet(string(n.Value))
 	return ast.WalkContinue, nil
 }
 
@@ -413,7 +480,7 @@ func (m *MarkdownTextSplitterV2) renderString(
 // =================================================================================================================//
 // =================================================================================================================//
 
-// MarkdownWriter writes Markdown text to chunks
+// MarkdownWriter writes Markdown text to chunks.
 type MarkdownWriter struct {
 	// hTitle represents the current header(H1、H2 etc.) content
 	hTitle string
@@ -440,9 +507,12 @@ type MarkdownWriter struct {
 	curSnippet   string
 	chunkSize    int
 	chunkOverlap int
-	chunks       []string
+	chunks       []Chunk
+	// headers represents the currently active set of headers
+	headers []string
 	// secondSplitter re-split markdown single long paragraph into chunks
 	secondSplitter TextSplitter
+	levelHeaderFn  LevelHeaderFn
 }
 
 // Available returns the number of bytes that can be written without blocking.
@@ -457,7 +527,7 @@ func (m *MarkdownWriter) Buffered() int {
 
 // Flush writes any buffered data to the underlying io.Writer.
 func (m *MarkdownWriter) Flush() error {
-	m.flush()
+	m.applyToChunks()
 	return nil
 }
 
@@ -474,13 +544,19 @@ func (m *MarkdownWriter) WriteRune(r rune) (int, error) {
 
 // WriteString writes a string.
 func (m *MarkdownWriter) WriteString(snippet string) (int, error) {
+	m.joinSnippet(snippet)
+	return len(snippet), nil
+}
+
+// joinSnippet join sub snippet to current total snippet.
+func (m *MarkdownWriter) joinSnippet(snippet string) {
 	if snippet == "" {
-		return 0, nil
+		return
 	}
 
 	// check whether current chunk exceeds chunk size, if so, apply to chunks
 	if utf8.RuneCountInString(m.curSnippet)+utf8.RuneCountInString(snippet) >= m.chunkSize {
-		m.flush()
+		m.applyToChunks()
 		if !m.hTitlePrepended && m.hTitle != "" && !strings.Contains(m.curSnippet, m.hTitle) {
 			// prepend `Header Title` to chunk
 			m.curSnippet = fmt.Sprintf("%s\n%s", m.hTitle, snippet)
@@ -491,7 +567,6 @@ func (m *MarkdownWriter) WriteString(snippet string) (int, error) {
 	} else {
 		m.curSnippet = fmt.Sprintf("%s%s", m.curSnippet, snippet)
 	}
-	return len(snippet), nil
 }
 
 // Write writes bytes.
@@ -512,36 +587,61 @@ func (m *MarkdownWriter) clone() *MarkdownWriter {
 		chunkSize:      m.chunkSize,
 		chunkOverlap:   m.chunkOverlap,
 		secondSplitter: m.secondSplitter,
+		headers:        m.headers,
+		levelHeaderFn:  m.levelHeaderFn,
 	}
 }
 
-func (m *MarkdownWriter) flush() {
+func (m *MarkdownWriter) applyToChunks() {
 	defer func() {
 		m.curSnippet = ""
 	}()
 
-	var chunks []string
+	headerMetadata := m.getHeaderMetadata()
+
+	var chunks []Chunk
 	if m.curSnippet != "" {
-		// check whether current chunk is over ChunkSize，if so, re-split current chunk
+		// check whether current chunk is over ChunkSize，if so, re-split current chunk.
 		if utf8.RuneCountInString(m.curSnippet) <= m.chunkSize+m.chunkOverlap {
-			chunks = []string{m.curSnippet}
+			chunks = []Chunk{{Text: m.curSnippet, Metadata: headerMetadata}}
 		} else {
-			// split current snippet to chunks
+			// split current snippet into chunks.
 			chunks, _ = m.secondSplitter.SplitText(m.curSnippet)
 		}
 	}
 
-	// if there is only H1/H2 and so on, just apply the `Header Title` to chunks
+	// if there is only H1/H2 and so on, just apply the `Header Title` to chunks.
 	if len(chunks) == 0 && m.hTitle != "" && !m.hTitlePrepended {
-		m.chunks = append(m.chunks, m.hTitle)
+		titleChunk := Chunk{Text: m.hTitle, Metadata: headerMetadata}
+		m.chunks = append(m.chunks, titleChunk)
 		m.hTitlePrepended = true
 		return
 	}
 
 	for _, chunk := range chunks {
-		if chunk == "" {
+		if chunk.Text == "" {
 			continue
 		}
+		// TODO (noodnik2): is this needed?  Compare to V1 splitter
+		//if m.hTitle != "" && !strings.Contains(m.curSnippet, m.hTitle) {
+		//	// prepend `Header Title` to chunk
+		//	chunk.Text = fmt.Sprintf("%s\n%s", m.hTitle, chunk.Text)
+		//}
 		m.chunks = append(m.chunks, chunk)
 	}
+}
+
+// getHeaderMetadata returns metadata related to the current set of headers.
+func (m *MarkdownWriter) getHeaderMetadata() map[string]any {
+	if m.levelHeaderFn == nil {
+		return map[string]any{}
+	}
+	chunkMetadata := make(map[string]any, len(m.headers))
+	for i, hText := range m.headers {
+		fn := m.levelHeaderFn(i+1, hText)
+		for k, v := range fn {
+			chunkMetadata[k] = v
+		}
+	}
+	return chunkMetadata
 }

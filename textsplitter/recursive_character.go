@@ -31,8 +31,8 @@ func NewRecursiveCharacter(opts ...Option) RecursiveCharacter {
 }
 
 // SplitText splits a text into multiple text.
-func (s RecursiveCharacter) SplitText(text string) ([]string, error) {
-	finalChunks := make([]string, 0)
+func (s RecursiveCharacter) SplitText(text string) ([]Chunk, error) {
+	finalChunks := make([]Chunk, 0)
 
 	// Find the appropriate separator
 	separator := s.Separators[len(s.Separators)-1]
@@ -61,7 +61,7 @@ func (s RecursiveCharacter) SplitText(text string) ([]string, error) {
 		if len(goodSplits) > 0 {
 			mergedText := mergeSplits(goodSplits, separator, s.ChunkSize, s.ChunkOverlap)
 
-			finalChunks = append(finalChunks, mergedText...)
+			finalChunks = append(finalChunks, texts2Chunks(mergedText)...)
 			goodSplits = make([]string, 0)
 		}
 
@@ -74,8 +74,16 @@ func (s RecursiveCharacter) SplitText(text string) ([]string, error) {
 
 	if len(goodSplits) > 0 {
 		mergedText := mergeSplits(goodSplits, separator, s.ChunkSize, s.ChunkOverlap)
-		finalChunks = append(finalChunks, mergedText...)
+		finalChunks = append(finalChunks, texts2Chunks(mergedText)...)
 	}
 
 	return finalChunks, nil
+}
+
+func texts2Chunks(texts []string) []Chunk {
+	chunks := make([]Chunk, len(texts))
+	for i := range texts {
+		chunks[i] = Chunk{Text: texts[i]}
+	}
+	return chunks
 }

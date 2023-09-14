@@ -10,6 +10,7 @@ type Options struct {
 	AllowedSpecial    []string
 	DisallowedSpecial []string
 	SecondSplitter    TextSplitter
+	LevelHeaderFn     LevelHeaderFn
 }
 
 // DefaultOptions returns the default options for all text splitter.
@@ -82,5 +83,15 @@ func WithDisallowedSpecial(disallowedSpecial []string) Option {
 func WithSecondSplitter(secondSplitter TextSplitter) Option {
 	return func(o *Options) {
 		o.SecondSplitter = secondSplitter
+	}
+}
+
+// LevelHeaderFn is a function that can return metadata based upon the text set into a given markdown level header.
+type LevelHeaderFn func(level int, text string) map[string]any
+
+// WithLevelHeaderFn sets the function to be called for each level header.
+func WithLevelHeaderFn(fn LevelHeaderFn) Option {
+	return func(o *Options) {
+		o.LevelHeaderFn = fn
 	}
 }

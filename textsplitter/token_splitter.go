@@ -43,7 +43,7 @@ func NewTokenSplitter(opts ...Option) TokenSplitter {
 }
 
 // SplitText splits a text into multiple text.
-func (s TokenSplitter) SplitText(text string) ([]string, error) {
+func (s TokenSplitter) SplitText(text string) ([]Chunk, error) {
 	// Get the tokenizer
 	var tk *tiktoken.Tiktoken
 	var err error
@@ -57,7 +57,7 @@ func (s TokenSplitter) SplitText(text string) ([]string, error) {
 	}
 	texts := s.splitText(text, tk)
 
-	return texts, nil
+	return texts2Chunks(texts), nil
 }
 
 func (s TokenSplitter) splitText(text string, tk *tiktoken.Tiktoken) []string {
