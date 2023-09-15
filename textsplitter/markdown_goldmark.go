@@ -622,11 +622,6 @@ func (m *MarkdownWriter) applyToChunks() {
 		if chunk.Text == "" {
 			continue
 		}
-		// TODO (noodnik2): is this needed?  Compare to V1 splitter
-		//if m.hTitle != "" && !strings.Contains(m.curSnippet, m.hTitle) {
-		//	// prepend `Header Title` to chunk
-		//	chunk.Text = fmt.Sprintf("%s\n%s", m.hTitle, chunk.Text)
-		//}
 		m.chunks = append(m.chunks, chunk)
 	}
 }

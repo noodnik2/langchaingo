@@ -117,6 +117,8 @@ type markdownContext struct {
 }
 
 // splitText splits Markdown text.
+//
+//nolint:cyclop,gci
 func (mc *markdownContext) splitText() []Chunk {
 	for idx := mc.startAt; idx < mc.endAt; {
 		token := mc.tokens[idx]

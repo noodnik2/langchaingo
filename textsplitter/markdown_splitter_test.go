@@ -353,7 +353,8 @@ AA Contents come here.
 AB Contents.
 # C
 And finally C's Contents.
-`}, "")
+`,
+	}, "")
 }
 
 func reconstructMarkupFn(chunks []Chunk) string {
